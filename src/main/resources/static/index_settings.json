@@ -12,7 +12,9 @@
         "type": "custom",
         "tokenizer": "standard",
         "filter": [
-          "lowercase"
+          "lowercase",
+          "autocomplete_filter",
+          "asciifolding"
         ]
       },
       "autocomplete_index": {
@@ -20,7 +22,8 @@
         "tokenizer": "standard",
         "filter": [
           "lowercase",
-          "autocomplete_filter"
+          "autocomplete_filter",
+          "asciifolding"
         ]
       }
     }

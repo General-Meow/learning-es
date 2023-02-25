@@ -26,8 +26,8 @@ public record CompanyAuto(@Id
                                   @InnerField(suffix = "search", type = FieldType.Text, analyzer = "autocomplete_index", searchAnalyzer = "autocomplete_search")
                               }
                           )
-
                           String name,
+
                           @Field(type = FieldType.Keyword)
                           String telephone,
 

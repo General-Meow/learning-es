@@ -127,15 +127,15 @@ public class ElasticsearchConfig extends ElasticsearchConfiguration {
     final FileInputStream fileInputStream = new FileInputStream(datafile);
 
     final CloseIndexResponse closeIndexResponse = elasticsearchClient.indices()
-        .close(builder -> builder.index("companymanual"));
+        .close(builder -> builder.index(CompanyType.MANUAL.getIndexName()));
     log.info("closed companymanual {}", closeIndexResponse.acknowledged());
 
     final PutIndicesSettingsResponse putIndicesSettingsResponse = elasticsearchClient.indices()
-        .putSettings(builder -> builder.index("companymanual").withJson(fileInputStream));
+        .putSettings(builder -> builder.index(CompanyType.MANUAL.getIndexName()).withJson(fileInputStream));
     log.info("settings result {}", putIndicesSettingsResponse.acknowledged());
 
     final OpenResponse openResponse = elasticsearchClient.indices()
-        .open(builder -> builder.index("companymanual"));
+        .open(builder -> builder.index(CompanyType.MANUAL.getIndexName()));
     log.info("open companymanual {}", openResponse.acknowledged());
   }
 

@@ -6,6 +6,8 @@ import java.util.List;
 import java.util.Optional;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.elasticsearch.client.elc.ElasticsearchTemplate;
 import org.springframework.data.elasticsearch.core.SearchHit;
 import org.springframework.data.elasticsearch.core.SearchHits;
@@ -66,5 +68,21 @@ public class CompanyAutoController {
     return ResponseEntity.of(
         Optional.of(searchResult.getSearchHits().stream().map(SearchHit::getContent).collect(
             Collectors.toList())));
+  }
+
+  @GetMapping("/search/telephone/{term}")
+  public ResponseEntity<CompanyAuto> telephoneSearch(@PathVariable String term) {
+
+    final Optional<CompanyAuto> byTelephone = companyRepository.findByTelephone(term);
+
+    return ResponseEntity.of(byTelephone);
+  }
+
+  @GetMapping("/search/owner/{term}")
+  public ResponseEntity<Page<CompanyAuto>> ownerSearch(@PathVariable String term, Pageable pageable) {
+
+    final Page<CompanyAuto> companies = companyRepository.findAllByOwner(term, pageable);
+
+    return ResponseEntity.ok(companies);
   }
 }
