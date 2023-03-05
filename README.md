@@ -31,6 +31,8 @@ Locally in docker you should run with the options
 - List indices: `curl http://localhost:9200/_cat/indices?v`
 - Settings for index: `curl http://localhost:9200/<INDEX_NAME>/_settings` There might also be a cluster/system wide one too
 - Get mapping for index: `curl http://localhost:9200/<INDEX_NAME>/_mapping`
+- Get settings and mappings for index: `curl http://localhost:9200/<INDEX_NAME>` 
+- Get all templates: `curl http://localhost:9200/_template`
 
 ### CRUD
 
@@ -106,6 +108,7 @@ Locally in docker you should run with the options
 - Delete document
 
 - Update by query, this is effectively update where x=''
+  - this will find documents that match the query and reindex them or run a script against them using the _source properties
   - `ctx` is the current context document
   - following example decrements the stock counter of matched documents
 `curl -X POST localhost:9200/<INDEX_NAME>/_update_by_query`
@@ -139,8 +142,33 @@ Locally in docker you should run with the options
 - Mapping is ES's version of a DB schema, it defines the structure and types of fields in an index
 - Mapping, there's two types of mapping. Dynamic and Explicit
   - Dynamic allows you to add new fields at the top level, object or nested by indexing a doc and it will guess the types
+    - The rules for types are
+      - Strings become text with keyword type, date if the string matches a date regex and float/long if the string is a number
+      - integers become longs, booleans are booleans
+      - json objects become the object type
+      - arrays become whatever the first element of that array
   - Explicit allows you to explicitly define what string fields are treated as full text fields etc.
   - You can use a mix of both explicit and dynamic
+  - To configure if an index uses Dynamic or strict, you use the `dynamic` property under the `mappings` property
+    - There are 3 possible values this property can have
+      - "strict"
+      - true
+      - false
+    - When false, it does not stop a document from indexing if theres an unknown field, it just saves the data into the `_source` and does not index the field (create internal data structures for it), this means you cannot query against that field too
+    - When true, it will work out what types the new fields are and index them so that you can query against it
+    - When `strict` behaves like RDBS where indexing a document with unknown fields will be rejected
+  - The `dynamic` setting is inherited so all properties within the mapping will take the value BUT you can fine tune it by overriding that global setting be mapping property
+```json
+{
+ "mapping": {
+   "dynamic": true,
+   "blah" : {
+     "dynamic": "strict"
+   }
+ } 
+}
+```
+
   - You'll need to use explicit if you want to customise your text fields with text analysers
   - There are many types to use during mapping
     - Text - for full text search
@@ -162,11 +190,12 @@ Locally in docker you should run with the options
     - coersion is enabled by default, if you want to disable it, you can do so at the property level in the mapping or the index settings level, `"coerce": false` or `"settings": { "index.mapping.coerce": false }`
   - To create a mapping, you'll need to use the `properties` parameter in the json to define the mapping structure
   - There is no special type for Arrays, this is because every type is flattened into an array of zero or more values
-- Because mappings are dynamic, all properties in an index are optional, so you can have documents with no values in them. 
-  - There is no need to define properties as nullable, this means ES doesn't provide any means of integrity like a relational database
-  - During a search, you do not need to handle fields that are empty, ES will ignore documents with those missing fields automatically
-- To get a mapping `curl localhost:9200/<INDEX_NAME>/_mapping`
-- To create a mapping
+    - This basically means that all (most?) types can hold an array of the same type
+  - Because mappings are dynamic, all properties in an index are optional, so you can have documents with no values in them. 
+    - There is no need to define properties as nullable, this means ES doesn't provide any means of integrity like a relational database
+    - During a search, you do not need to handle fields that are empty, ES will ignore documents with those missing fields automatically
+  - To get a mapping `curl localhost:9200/<INDEX_NAME>/_mapping`
+  - To create a mapping
 `curl -X PUT http://localhost:9200/myIndex/_mapping`
 ```json
 {
@@ -197,10 +226,12 @@ Locally in docker you should run with the options
 ```
 - Updating mappings - almost the same as create but you miss out the `mapping` property
 - You cannot change the type of a field once it has been created in the mapping
-  - The only exception to this is SOME field mappings can be changed/updated
+  - The only exception to this is SOME field mapping properties can be changed/updated
   - This is because you may already have documents indexed and analysed already and changing it will invalidate that and it may change the underlying datastore type e.g. from BKD to inverted index
 - You cannot remove a field mapping too
 - If need to make a change to the mapping that is not allowed, you will then need to use the Reindex API
+- If you simply want to change the name of a field or index, you can use aliases
+  - e.g. `"new_property_name": { "type": "alias", "path": "current_property_name" }` this would be an update in the mapping
 - Updates are appended and not replaced, this means you can just add the new field to the payload and it will be added to the existing mapping
 `curl -X PUT localhost:9200/<INDEX_NAME>/_mapping/`
 ```json
@@ -211,8 +242,46 @@ Locally in docker you should run with the options
     }
   }
 }
-
 ```
+- Not all changes to mappings can be updated on the fly. In some cases you may need to "close" the index to update it before "open" it again
+  - To close: `curl -X POST localhost:9200/<INDEX_NAME>/_close`
+  - To open: `curl -X POST localhost:9200/<INDEX_NAME>/_open`
+  - Index's that are closed cannot be read or written to
+  - If you cannot close an index because its used in production and have no down time, you can instead create a new index and use the re-index api then apply an index alias 
+- Field mappings can hold more than one mapping, these are known as multi-field mappings
+  - This basically means that a property can be mapped as say a `keyword` type and also another field with a `text` type
+  - You will be able to give names to these other fields and query against them in their own special way depending on their type
+  - To define a multi-field mapping, you add a `fields` property to the field and give it a name, by convention, you typically give the name the same type (i think that's confusing though)
+  - To access the additional field, you do so by using the root property name dot then the new property name e.g. "address1.keyword"
+  - Creating multifield mappings will create new internal datastructures to hold the additional data e.g. inverted indexes
+
+```json
+{
+  "mappings": {
+    "address1": {
+      "type" : "text",
+      "fields": {
+        "keyword": {   //this is the name of the field, this will be accessible via "address1.keyword", you can choose another name if you want
+          "type": "keyword"
+        }
+      }
+    }
+  }
+}
+```
+
+- A query for multifield mappings could look like 
+```json
+{
+  "query": {
+    "term": {
+      "address1.keyword": "8 childeric road"
+    }
+  }
+}
+```
+
+
 ### Keyword and Text types
 
 - Depending on the data type, different data structures are used to internally store them (handled by lucine)
@@ -354,6 +423,113 @@ e.g.
 - `ignore_above` is used to define the amount of characters a field can have before being ignored for indexing and storage
   - For arrays, it's applied to the individual elements
 
+#### Reindex API
+
+- Because you can't change the types of fields, you would normally create a new index with the required changes and then re index the data into the new index
+  - This would traditionally require you to create a migration app to reindex the data into the new index 
+  - This is quite a common flow, so because of this, ES have created the reindex api feature that will make this process easier
+- The bulk api allows you to copy data from one index to another
+  - the destination index does not need to be empty to do so
+  - copying data will be copied over as is, so types in the `_source` property will copy over to the destination with the same types unless its converted using scripts
+  - unless you've defined a query in the "source" part of the request, you'll end up copying all of the data in the source index
+  - the bulk api is accessible via the `localhost:9200/_reindex` url
+
+- to use the api and change the type of a field...
+`curl -X POST localhost:9200/_reindex`
+
+```json
+{
+  "source": {
+    "index": "old_index",
+    "query": {
+      "match_all": { }  // this is like a select *, so will copy all of the data
+    }
+  },
+  "dest": {
+    "index": "new_index",
+    "script": """
+            if (ctx._source.product_id != null){
+              ctx._source.product_id = ctx._source.product_id.toString();
+            }     
+    """
+  }
+}
+```
+
+- If you have removed a field in the new index, using the reindex api will not automatically remove that data, it will still be in the destination _source property unless you manually choose fields to copy over or use a script to remove it
+
+`curl -X POST localhost:9200/_reindex`
+```json
+{
+  "source": {
+    "index": "old_index",
+    "source": ["field1", "field2"]  //only copy these fields over
+  },
+  "dest": {
+    ...  
+  }
+}
+```
+
+- remapping a field or renaming a field will need to have the source moved to the new field in the destination
+
+`curl -X POST localhost:9200/_reindex`
+```json
+{
+  "source": {
+    "index": "old_index"
+  },
+  "dest": {
+    "index": "new_index"
+  },
+  "script": {
+    "source": """,
+            ctx._source.new-field = ctx._source.remove("old_field"); //remove function will retrieve the value and delete the field
+    """
+  }
+}
+```
+
+- You can also choose to skip documents by setting the noop property on ctx to "noop", this will cause es to do nothing, this is similar to having a query in the source property
+  - You should use this method if you need to programmatically work out to skip or not
+  - You should use the query method if you can as that filters first and therefore is more performant rather than retrieving all and then working out to filter
+  - You can set "op" to "delete" if you want to delete it from the index, this might be used if the destination already has the data in it
+```json
+...
+  "script": """
+    if(ctx.somthing == x){
+      ctx.op = "noop"
+    }   
+"""
+```
+
+### Index templates
+
+- These are just templates of mappings and settings that new indicies will copy when the index name matches the templates regex
+- These are really good for setups where you have data in indices that rotate by day/week/month etc like webserver access logs, where a new index will hold data for a day/week etc with the name `access-logs-2000-01-01`
+- To get all the templates currently installed: `curl http://localhost:9200/_template`
+- Changing a template only affects new indicies that matche the regex, it will not update indicies that have previously matched
+- To create a template: `curl -X POST http://localhost:9200/_component_template/<template_name>`
+  - The `index_patterns` property is the regex used to match the new index names
+```json
+{
+  "index_patterns": ["template-*", "date-*"],
+  "template": {
+    "settings": { //optional
+      "number_of_shards": 1
+    },
+    "mappings": { //optional
+      "properties": {
+        "@timestamp": {
+          "type": "date"
+        }
+      }
+    }
+  }
+
+}
+```
+
 #### Text analyzers
 
 - Text analyzers are used to apply text analysis on `text` type fields, there are many out of the box analyzers: standard, simple, whitespace, stop etc or your own custom
@@ -404,7 +580,7 @@ e.g.
 ```
 
 - By default, when you index a field using type `text` it will use the `standard` analyzer
-- To create a custom analyzer you first have to ensure that the index thats going to use it doesn't exist, then use the endpoint create endpoint with the settings payload
+- To create a custom analyzer you first have to ensure that the index that's going to use it doesn't exist, then use the endpoint create endpoint with the settings payload
 
 `curl -X PUT http://localhost:9200/myIndex`
 
@@ -443,6 +619,49 @@ e.g.
   }
 }
 ```
+
+- if the index already exists you have to use close the index and then use a slightly different payload
+
+`curl -X PUT http://localhost:9200/myIndex/_settings`
+```json
+{
+    "settings": {
+      "index": {
+        "analysis": {
+          "filter": {
+            "autocomplete_filter": {
+              "type": "edge_ngram",
+              "min_gram": "1",
+              "max_gram": "20"
+            }
+          },
+          "analyzer": {
+            "autocomplete_index": {
+              "filter": [
+                "lowercase",
+                "autocomplete_filter",
+                "asciifolding"
+              ],
+              "type": "custom",
+              "tokenizer": "standard"
+            },
+            "autocomplete_search": {
+              "filter": [
+                "lowercase",
+                "autocomplete_filter",
+                "asciifolding"
+              ],
+              "type": "custom",
+              "tokenizer": "standard"
+            }
+          }
+        }
+      }
+    }
+}
+```
+
+
 - Once created you can start testing the new analyzer using the `/myIndex/_analyze` endpoint
 - Specifying an analyzer happens at a number of places, 
   - on a `text` type field, on an `index` or a query
@@ -470,7 +689,7 @@ e.g.
 }
 ```
 
-- Search analyzer to use during query
+- Search analyzer to use during query, by default if you don't provide an analyser during query time, the same analyser used to index the doc will be used
 `curl /myIndex/_search`
 ```json
 {
@@ -500,10 +719,23 @@ e.g.
 }
 ```
 
-
+- When it comes to updating or changing a text anayliser, you should be very careful, any documents in the index that will be have been analysed using the old analyser will still be in the index with old analysed data
+  - What this means then is that you will need to reindex that data so that your queries against that field/analyser will bring that data
+  - So be careful, you could potentially have data indexed in the old and new way
+  - To fix this issue, you can use the `_update_by_query` api
 - You can also customise/configure the out of the box analyzers if you wished
 
-#### Stemming
+#### Stemming & Stop words
+
+- Stemming is a feature that allows you to do text based anaylsis on text and convert words to their root form, this will effectively allow searches that have very similar words be hits
+  - e.g. I was running today would become something like i, ran, today and search terms with the text run, ran, running, jog may be terms that will hit
+- ES provides stemming via token filters
+- There are two types of stemmers
+  - Algorithmic stemmers which change words based off an algo
+  - Dictionary stemmers, which look up words and replace them with the found terms
+- Stop words are common words that don't actually provide much value to some text, 'a', 'the', 'at', 'of' etc are some
+  - the standard analyser has it but is disabled by default
+- 
 
 #### Token Graphs
 
@@ -511,9 +743,54 @@ e.g.
 ### Advanced Search
 
 - Search with spring data ES can be done just like jpa, where you extend the `ElasticsearchRepository` and provide abstract methods with names like `findByX(String x)`
-- You can also use the `@Query` annotation 
+- You can also use the `@Query` annotation
+- There are two ways in which you can search against ES, uri basic search and search via payload, both methods use the `_search` endpoint 
+  - uri: this method takes query parameters that are lucene compliant, this isn't used much but only to do simple searches
+  - post: this method takes a payload that is a full query
+- There are multiple types of queries in ES
+  - `Term` query is used for exact matching (sql = type filtering),
+    - These queries are NOT analysed so the search term is not changed in any way 
+    - this can only be used on `keyword`, `number`, `date` type fields
+    - SHOULD NOT be used on `text` fields, you will get inconsistent results because the index doc field will be tokenised and if you search for multiple words it won't return with any results
+- The basic format for a query is:
+
+```json
+{
+  "query": {
+    "match_all": {}   // select * type query, this part can change depending on the type of query you want to do
+  }
+}
+```
+
+- Term query example
+
+```json
+{
+  "query": {
+    "term": { 
+      "field": "MY_VAl"
+    }
+  }
+}
+```
+
+- 
 
  
 ### General Notes
 
 - Text vs Keyword property types, Text is for general text search that allows processing while Keyword is for SQL == type of searches
+
+
+
+
+
+
+
+
+
+
+
+
+
+
