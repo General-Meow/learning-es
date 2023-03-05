@@ -297,16 +297,17 @@ Example of 2 sentences indexed
 a dog barks at you
 a cat meows at you
 
-        Doc 1     Doc 2
-a        x          x
-at       x          x
-barks    x
-cat                 x
-dog      x
-meows               x
-you      x          x
+```text
+       |  Doc 1  |   Doc 2
+a      |    x    |     x
+at     |    x    |     x
+barks  |    x    | 
+cat    |         |     x
+dog    |    x    |
+meows  |         |     x
+you    |    x    |     x
 
-       
+```
 
 ### Date types
 
