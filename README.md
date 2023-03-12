@@ -747,39 +747,448 @@ e.g.
 - You can also use the `@Query` annotation
 - There are two ways in which you can search against ES, uri basic search and search via payload, both methods use the `_search` endpoint 
   - uri: this method takes query parameters that are lucene compliant, this isn't used much but only to do simple searches
-  - post: this method takes a payload that is a full query
+  - post: this method takes a payload that is a full query in query DSL format
+- The post type queries using query dsl have a shorthand form and an explicit form
+  - Most of the time, the shorthand form is enough but when you want to provide additional search options, then the explicit form is needed
+- Short hand form
+
+```json
+{
+  "query": {
+   "term": {
+     "my_property": "theTextToSearchFor"
+   } 
+  }
+}
+```
+
+- Explicit form
+
+```json
+{
+  "query": {
+   "term": {
+     "my_property": {
+       "value": "theTextToSearchFor",
+       "case_insensitive" : true
+     }
+   } 
+  }
+}
+```
+
 - There are multiple types of queries in ES
-  - `Term` query is used for exact matching (sql = type filtering),
-    - These queries are NOT analysed so the search term is not changed in any way 
-    - this can only be used on `keyword`, `number`, `date` type fields
-    - SHOULD NOT be used on `text` fields, you will get inconsistent results because the index doc field will be tokenised and if you search for multiple words it won't return with any results
-- The basic format for a query is:
+  - There are two general types of queries `Compound` and `Leaf` type queries
+  - `Compound` queries are queries that wraps one or more leaf type queries to generate results
+  - `Leaf` queries are types that can be used independently to get results, these types only have one type of query at the top level, the following are leaf types
+  - There are multiple left type queries
+    - `term` query is used for exact matching (sql = type filtering),
+      - These queries are NOT analysed so the search term is not changed in any way 
+      - this can only be used on `keyword`, `number`, `date` type fields
+      - supports `case_insensitive` option, only brought in recently so older es installs wont support it
+      - SHOULD NOT be used on `text` fields, you will get inconsistent results because the index doc field will be tokenised and if you search for multiple words it won't return with any results
+    - `terms` just like the term query but searches using an array of search terms
+      - behaves like an sql `in` query. e.g. `field in ("term1", "term2", "term3")`
+    - `ids` allows you to search for multiple documents by id
+    - `range` allows you to do search in between a range like numbers or dates
+      - uses `gte`, `gt` for greater than equal and greater than
+      - uses `lte`, `lt` for less than equal and less than
+      - supports the property `format` for date range queries that set the term date formats
+      - supports the property `time_zone` to set the UTC offset which changes the search term dates 
+    - `prefix` allows you to search for values that begins with some text
+      - Used on `keyword` type fields
+    - `wildcard` allows you to searches using wildcards
+      - uses `?` and `*` for single any character or zero or more any characters
+      - e.g. `past?` could match pasta or `past*` could match pasta or pastry 
+      - it is not encouraged to use wild cards at the beginning of terms because it is very inefficient/slow
+    - `regex` uses regex to do searches
+      - You might hit the entire document field text in order for a match, so `+` won't consume all chars and may leave some possible hits out
+      - Anchor symbols are not supported, these are the beginning (^) and end ($) of line
+      - Is casesensitive so can use the `case_insensitive` option
+    - `exists` does a query that returns documents that have a field/field value INDEXED
+      - having a value indexed means that values that are not null, empty array or empty string 
+      - fields that have a mapping of `index` to `false` will also no be index and will show up in searches
+      - if the field has been configured with the option of `ignore_above` that too will skip indexing that field when the value is above that configured value
+      - Same with the `ignore_malformed` something to do with coersion?
+      - In a relational database this basically means when a column is null
+      - because ES does not even have the field when it isn't used, you'll have to use the exists query unless you've configured that fields mapping to use a value for null (`null_value`)
+      - there is no dedicated type for the inverse of this, in other words does not exist but you can use the `bool` type and `must_not` as a work around
+    - `match` this is the type used for "full text" search
+      - these queries will have the same analyser applied to them as the field unless its specified not to
+        - What this means is that the search term will be tokenised and run through filters, then each of the tokens will be used to search against the field and any documents with any of the search tokens will be returned
+      - should not be used on `keyword` type fields
+      - can be given one or more terms to search for (because the search term is tokenised)
+      - when multiple terms are provided to search for, it search behaves like an `OR` search, so documents that match just one term will be returned
+      - you can change the behaviour of the multi term search by using the property option `operator` and setting it to `AND` which will make documents matching all terms to be returned only
+      - documents returned will have a relevance score (in the _score field) to them showing how well they matched the search term. by default the result set will be sorted by best score descending
+      - Under the hood, match queries get converted to `bool` queries and depending on host many tokens in the search term will either become a `should` (for multiple) or `must` (for single)
+    - `multi_match` just like match for full text search but this will search multiple mapped fields
+      - You will need to provide a `query` property for the search terms and also a `fields` property to indicate which mapped fields to search
+      - You could search for things like address1, address2 in a single query 
+      - just like match queries, its an `OR` like search, so if one field is matched, it will be returned
+        - You can change this behaviour from `OR` to `AND` by adding the `operator` property and setting it to `andxbvcxhngvcjgh
+      - You can add relevance boosting to fields if a field is considered more important
+        - This is done by adding a carrot symbol to the field term and adding a number to it, this will then multiply the scoring by that number
+        - e.g. `"fields": ["field1^2", "field2"]` this will boost scores for documents that matched on "field1" by 2 therefore those matching will be higher
+      - internally, ES will create multiple queries for multi match queries and join the results, look at the `dis_max` as it gets converted to that
+      - scoring is tricky for multi match
+        - as there will be multiple queries split out for multi match, each result may have multible scores if they match multiple queries, in this case, the highest score will be taken for the relevance score
+        - If you wish so reward documents that have matched on more than one query, you can use the `tie_breaker` property option
+    - `match_phrase` unlike `match` type searches where any of the search terms can appear in any order, `match_phrase` type searches order terms in the exact same order (position) with no other terms in between
+      - e.g. a document with a field containing `don't put all your eggs in one basket`
+        - match type search with the terms `basket eggs one` will return the document
+        - phrase search with the same `basket eggs one` will not but if you changed it to `eggs in one basket` it will
+  - `Compound` queries wrap other queries together to achieve a result, an example of this functionality would be to search for certain type of products that are in stock
+    - e.g. find wine type products where stock is greater than 0 this will require two queries together
+    - You can even wrap compound queries into other compound queries
+    - So you can add another compound to the above example to include products with the name `Sauvignon`
+    - The following are different types of compound queries
+      - `bool` used for queries where you have multiple boolean conditions
+        - its contains 4 different `occurance` types that define the behaviour and results
+          - `must`: an array of zero or more leaf type queries, documents MUST match ALL the queries in this array, effectively acting in an `AND` operator
+          - `must_not`: an array of zero or more leaf queries where documents must not match to be included in the result. Effectively filtering out anything that matches this query,
+          - `should`: array of zero or more leaf queries. documents don't need to match this query but if they do, they will be boosted in the relevance score (these scores are added to the main relevant score)
+          - `filter`: just like `must` but does not apply any relevance scoring to the returned documents, if you don't care about the scores, use this as it will improve the search performance, as well as caching for future queries
+          - an optional `minimum_should_match` property can be provided to define how many should's must match in order for a document to appear, defaults to 1 when no must are provided
+        - You can have a bool query with just `should` in this case at least one of the queries must match for the document to be included in the result, this type of query is good for queries that you dont care too much what was matched but would return at least something
+        - You can have nested bool queries in any of the occurances
+      - `boosting` decreases relevance scores by having 3 properties
+        - `positive` the query within this property must match, you can only provide one query, so if you want to include multiple search terms, you'll have to use a bool query with should in the positive
+        - `negative` the query here is an optional but if matched will decrease the relevance score, only documents from the positive results are run against this query
+        - `negative_boost` this property will define the modifier amount of scoring when matching the negative query, it's between 0.0 - 1.0 and will be multiplied by the score
+      - `dis_max` is the disjunction max query will return documents that match any of the queries and will apply the highest relevance score to that
+        - Contains the `queries` property that takes an array of queries that return documents with a relevance score
+        - Can also have the `tie_breaker` property to multiply the lower scores then add them to the highest score, with defaults to 0.0 when not defined
+      - 
+  - Queries can run in two different types of contexts, which are indicated at the top most root level property
+    - Query: where relevant scores will be calculated for documents that are returned
+    - Filter: where results are not scored, queries will be faster and cached
+      - Typicaly good for keyword type of querying
+      - Not all queries support this
+
+```json
+{
+  "query": {...}
+}
+```
+```json
+{
+  "filter": {...}
+}
+```
+#### Query examples
+
+##### The basic format for a query is:
 
 ```json
 {
   "query": {
     "match_all": {}   // select * type query, this part can change depending on the type of query you want to do
-  }
+  },
+  "size": 50          // changes the size to the result set. defaults to 10
 }
 ```
 
-- Term query example
+##### Term query example
 
 ```json
 {
   "query": {
     "term": { 
-      "field": "MY_VAl"
+      "myField": "MY_VAl", //or
+      "myBoolean": true, //or
+      "myNumber": 1, //or
+      "myDate": "2000/01/01", //or
+      "myDateTime": "2000/01/01 12:00:00"
     }
   }
 }
 ```
 
-- 
+##### Terms query example
 
- 
+```json
+{
+  "query": {
+    "terms": {
+      "myField": ["term1", "term2", "term3"]
+    }
+  }
+}
+```
+
+##### Ids query example
+
+```json
+{
+  "query": {
+    "ids": {
+      "values": ["id1", "id2", "id3"]
+    }
+  }
+}
+```
+
+##### Range query example
+
+```json
+{
+  "query": {
+    "range" : {
+      "myProperty": {
+        "gte": 5,
+        "lt": 10
+      }
+    }
+  }
+}
+```
+
+##### Prefix example
+
+```json
+{
+  "query": {
+    "prefix": {
+      "name": "past"
+    }
+  }
+}
+```
+
+##### Wildcard example
+
+```json
+{
+  "query": {
+    "wildcard": {
+      "name": "past*"  //this will behave just like the prefix one above
+    }
+  }
+}
+```
+
+##### Regex example
+
+```json
+{
+  "query": {
+    "regex": {
+      "product_name": "Size (S|M|L) Shirt", //or
+      "product_name": "Bee[a-zA-Z]+"   //will hit Beef,Beer,Beers etc 
+    }
+  }
+}
+```
+
+##### Exists example
+
+```json
+{
+  "query": {
+    "exists": {
+      "field": "prod_name"
+    }
+  }
+}
+```
+
+##### Match example
+
+```json
+{
+  "query": {
+    "match": {
+      "myfield": "blah blah1"
+    }
+  }
+}
+```
+
+```json
+{
+  "query": {
+    "match": {
+      "myfield": {
+        "query": "blah blah1", //pay attention to the query key here, its not like term query where its `value`
+        "operator": "AND"      //optional property to make documents matching all terms to be returned
+      }
+    }
+  }
+}
+```
+
+##### Multi Match example
+
+```json
+{
+  "query": {
+    "multi_match": {
+      "query": "jim bob",
+      "fields": ["firstname", "surname", "nickname"],         //you can even use wildcard matching here so "*name" could also word here
+      "fields": ["firstname^2", "surname", "nickname"],          //or you can add a boost using a carrot at the end of a field name, only the highest score is taken here
+      "tie_breaker": 0.5          // boost documents when multiple matches over multiple fields and multiply all the other field scores by this value and add it to the highest score see: https://www.elastic.co/guide/en/elasticsearch/reference/current/query-dsl-multi-match-query.html
+      
+      
+    }
+  }
+}
+```
+
+##### Phrase match
+
+```json
+{
+  "query": {
+    "phrase_match": {
+      "my_field": "cow jumped over the moon"
+    }
+  }
+}
+```
+
+##### Boolean
+
+```json
+{
+  "query": {
+    "bool": {
+      "must": [
+        {
+          "term": {  //return all docs with a tag of alcohol
+            "type.tag": "alcohol"
+          }
+        }
+      ],
+      "must_not": [
+        {
+          "term": {  // remove all documents with wine in the tag
+            "type.tag": "wine"
+          }
+        }
+      ],
+      "should": [
+        {
+          "term": {  //boost all documents with are beer types
+            "type.tag": "beer"
+          },
+          "match": {  //boost all documents with are beer in their name
+            "name": "beer"
+          },
+          "match": {  //boost all documents with are beer in the description
+            "description": "beer"
+          }
+        }
+      ],
+      "minimum_should_match": 2          //optional property that states how many shoulds should match. when there are no must/filters then this defaults to 1
+    }
+  }
+}
+```
+
+- SQL: select * from x where (tag in ('wine') or name like '%wine%)  and stock <= 100
+
+```json
+{
+  "query": {
+    "bool": {
+      "filter": [
+        {
+          "lte": {
+            "stock": 100
+          }
+        }
+      ],
+      "must": [
+        {
+          "bool": {
+            "should": [                       //boolean with 2 shoulds make it like an or query where either is required
+              {                               //an alternative to this would be to move the shoulds up to the root level and force it to only require 1 with the `minimum_should_match` property
+                "term": {
+                  "tag": "wine"
+                }
+              },
+              {
+                "match": {
+                  "name": "wine"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+```json
+{
+  "query": {
+    "bool": {
+      "filter": [
+        {
+          "lte": {
+            "stock": 100
+          }
+        }
+      ],
+      "should": [                       
+        {                            
+          "term": {
+            "tag": "wine"
+          }
+        },
+        {
+          "match": {
+            "name": "wine"
+          }
+        }
+      ],
+      "minimum_should_match": 1                 // there is another way to do this further, which is to have a must with a `multi_match`
+    }
+  }
+}
+```
+
+##### Boosting
+
+```json
+{
+  "query": {
+    "boosting": {
+      "positive": {
+        "match_all":{}
+      },
+      "negative" : {
+        "match": {
+          "name": "apple"
+        }
+      },
+      "negative_boost": 0.5
+    }
+  }
+}
+```
+
+##### dis_max
+
+```json
+{
+  "query": {
+    "dis_max": {
+      "queries": [
+        { "term": { "ingredients": "butter" }},     //this is liken a or query where any of the 2 will match but the match will have the highest relevance score of the two
+        { "match":  { "name": "pasta" }}
+      ]
+    }
+  }
+}
+```
+
 ### General Notes
 
+- Upgrading ES should happen by upgrading the clients first then the server
 - Text vs Keyword property types, Text is for general text search that allows processing while Keyword is for SQL == type of searches
 
 
