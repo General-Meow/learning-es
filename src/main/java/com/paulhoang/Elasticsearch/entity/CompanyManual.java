@@ -22,7 +22,8 @@ public record CompanyManual(
     @JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "MM/dd/yyyy", timezone = "GMT")
     Date dateOfIncorporation,
     List<String> services,
-    String owner //todo build a relationship
+    Owner owner, //todo build a relationship
+    Status status
 ) {
 
 }

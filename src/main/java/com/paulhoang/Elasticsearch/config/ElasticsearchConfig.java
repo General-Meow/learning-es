@@ -3,6 +3,7 @@ package com.paulhoang.Elasticsearch.config;
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.elasticsearch._types.mapping.DateProperty;
 import co.elastic.clients.elasticsearch._types.mapping.KeywordProperty;
+import co.elastic.clients.elasticsearch._types.mapping.NestedProperty;
 import co.elastic.clients.elasticsearch._types.mapping.Property;
 import co.elastic.clients.elasticsearch._types.mapping.TextProperty;
 import co.elastic.clients.elasticsearch.core.CountRequest;
@@ -173,7 +174,8 @@ public class ElasticsearchConfig extends ElasticsearchConfiguration {
           propertyMap.put("dateOfIncorporation",
               new Property(DateProperty.of(builder1 -> builder1.format("date_optional_time||epoch_millis"))));
           propertyMap.put("services", new Property(KeywordProperty.of(builder1 -> builder1)));
-          propertyMap.put("owner", new Property(KeywordProperty.of(builder1 -> builder1)));
+          propertyMap.put("owner", new Property(NestedProperty.of(builder1 -> builder1)));
+          propertyMap.put("status", new Property(KeywordProperty.of(builder1 -> builder1)));
           builder.properties(propertyMap);
 
           return builder;

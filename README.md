@@ -389,6 +389,12 @@ e.g.
 - So if I did a query where name = "Paul" and age >= 20, both documents will be returned because both have "Paul" and both have ages above 20
 - To fix the above, you need to use the `nested` data type. If you use an array of objects, think `nested`
 - Another difference between Objects and Nested is that nested documents will be indexed seperatly, meaning that if you have 2 nested object, 3 documents will be saved, 2 nested and 1 outer document that holds it all
+  - these nested objects are hidden and you won't be able to access them directly unless you use the `nested` query
+  - nested objects have a performance impact so use them wisely
+  - more storage space is also used
+  - there is a limit of 10k nested objects per document across all of its fields but this can be configured using `index.mapping.nested_objects.limit`
+  - there is another limit of 50 different fields on an index that can be nested. again can be configured using `index.mapping.nested_fields.limit`
+ 
 
 #### Field configuration property parameters
 
@@ -741,7 +747,77 @@ e.g.
 #### Token Graphs
 
 
-### Advanced Search
+#### Parent and Child join relationships
+
+- Like relational databases, ES supports the concept of joining two or more separate instances of data
+- Unlike relational databases where this relationship happens different tables, ES has implemented it via a parent child dynamic within the same index
+- Parent/Child compared to Object and Nested types are very similar but like RDB's you can just change either the parent or child and the changes take place
+  - compared to Object and Nested, if you want to make a change to any of the objects, you will need to send the entired root level object again in full for it to take place
+- To take advantage of this feature, you create a property on the parent with the `type` property set to `join`
+  - This new property will then have another property called `relations` which is an object with a key and value describing the parent child(s) relationship
+
+`curl -X PUT localhost:9200/parent-child`
+```json
+{
+  "mappings": {
+    "properties": {
+      "an-example-join": {
+        "type": "join",
+        "relations": {
+          "question": "answer"    //the parent object is a question and the child objects are answers 
+        },
+        
+        "relations": {                        //can have many types of children too
+          "question": ["answer", "comment"] 
+        }
+      }
+    }
+  }
+}
+```
+
+- To insert data into the index as a parent object you do what you normally do but use the join property and define what side of the relation its on
+
+`curl -X PUT localhost:9200/parent-child/_doc/1`
+```json
+{
+  "id": "1",
+  "question": "whats the meaning of life",
+  "an-example-join": "question",
+  
+  // or use the long form
+  "an-example-join": {
+    "name": "question"
+  }
+}
+```
+
+- To link a child document to a parent, you insert a new document and in the join property, add a new property called `parent` and give it the id of the parent
+- One important thing is that the url specified will need to contain the routing parameter to ensure that the child document gets routed to the same node as the parent
+  - unless you've changed routing configuration, you can set the routing property to the id of the parent document
+- Because the parent and child documents persist into the same index, they share the same document id sequence
+- When searching, be sure to use the correct query type (has_child, has_parent), using any other query won't return the objects in the hits
+
+`curl -X PUT localhost:9200/parent-child/_doc/2?routing=1`
+```json
+{
+  "id": "2",
+  "answer": "the answer is 42",
+  "an-example-join": {
+    "name": "answer",
+    "parent": "1"
+  }
+}
+```
+
+- There are some limitations to joins
+  - only one join mapping per index but you can have multiple relations to a mapping
+  - many children supported using an array but only one parent
+- You can do specific queries against parents or children using `has_child` and `has_parent`
+- The mapping for a Parent child index looks just like any other index, all the parent and child properties will be there at the root level but because you can skip/ignore fields thats ok
+  -  There will be a property for the join though
+
+#### Advanced Search
 
 - Search with spring data ES can be done just like jpa, where you extend the `ElasticsearchRepository` and provide abstract methods with names like `findByX(String x)`
 - You can also use the `@Query` annotation
@@ -838,6 +914,8 @@ e.g.
       - e.g. a document with a field containing `don't put all your eggs in one basket`
         - match type search with the terms `basket eggs one` will return the document
         - phrase search with the same `basket eggs one` will not but if you changed it to `eggs in one basket` it will
+    - `has_child` and `has_parent` are queries for join types
+      - these allow you to search for child or parents that get returned by a query
   - `Compound` queries wrap other queries together to achieve a result, an example of this functionality would be to search for certain type of products that are in stock
     - e.g. find wine type products where stock is greater than 0 this will require two queries together
     - You can even wrap compound queries into other compound queries
@@ -859,11 +937,17 @@ e.g.
       - `dis_max` is the disjunction max query will return documents that match any of the queries and will apply the highest relevance score to that
         - Contains the `queries` property that takes an array of queries that return documents with a relevance score
         - Can also have the `tie_breaker` property to multiply the lower scores then add them to the highest score, with defaults to 0.0 when not defined
-      - 
+      - `nested` are queries that are used to search against `nested` object types
+        - The two main properties of a nested query is a `path` and `query`
+          - `path` is dot notation of the json path to the nested object from the root of the object
+          - `query` is the actual query you want to run, this in itself can be a compound query if you want the query multiple fields
+        - using nested queries will return the must outer document but you can change this by using nested inner hits
+          - use the property `inner_hits`
+          - this will create a new property `inner_hits` at the root level to show the nested properties that hit
   - Queries can run in two different types of contexts, which are indicated at the top most root level property
     - Query: where relevant scores will be calculated for documents that are returned
     - Filter: where results are not scored, queries will be faster and cached
-      - Typicaly good for keyword type of querying
+      - Typically good for keyword type of querying
       - Not all queries support this
 
 ```json
@@ -882,10 +966,21 @@ e.g.
 
 ```json
 {
-  "query": {
+  "query": {            //if you leave this query object out, you implicitly run any sorting etc against ALL documents in the index
     "match_all": {}   // select * type query, this part can change depending on the type of query you want to do
   },
-  "size": 50          // changes the size to the result set. defaults to 10
+  "size": 50,          // changes the size to the result set. defaults to 10
+  "from": 0           //0 by default, show hits from this index
+  "sort": [            
+    "propertyName" ,   //sorting is asc by default
+j    {"anotherProperty": "desc"}, //sort descending
+    { 
+      "ratings": {               //for properties that have multiple values in an array, you can sort by aggregating all the values
+        "order": "desc",
+        "mode": "max"
+      }
+    }
+  ]
 }
 ```
 
@@ -993,7 +1088,7 @@ e.g.
 }
 ```
 
-##### Match example
+##### Match example - full text search
 
 ```json
 {
@@ -1186,12 +1281,324 @@ e.g.
 }
 ```
 
+##### Nested
+
+- data example
+```json
+{
+  "company": "PC World",
+  "owners": [
+    {
+      "name": "Bob",
+      "address": "xyz",
+      "age": 40
+    },
+    {
+      "name": "Jim",
+      "address": "abc",
+      "age": 50
+    }
+  ]
+}
+```
+
+```json
+{
+  "query": {
+    "nested": {
+      "path": "owners",
+      "inner_hits": {                  //optional property if you want to get the inner most object that hit that query
+        "name": "my_hits",
+        "size": 10
+      },
+      "query": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "owners.name": "Bob"
+              }
+            },
+            {
+              "range": {
+                "owners.age" : {
+                  "gte": 35
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+          
+}
+```
+
+##### Parent child query
+
+```json
+{ 
+  "query": {
+    "has_parent": {                  //this could be "has_child" instead
+      "parent_type": "parent_type",  //this is the type of the parent .e.g. question in the question/answer parent child relationship 
+      "type" : "child_type",  //this is the type of the chlid, e.g. question is the question/anwser parent child relationship
+      "query": {                    //any query can go in here
+        "match_all": {}
+      }
+    }
+  }
+}
+```
+
+
+### Aggregations
+
+- Are queries that group documents in a way then does a calculation on them as a group, there are many types of calculations that exist in 3 groups
+- You can have multiple aggregations within a single search query
+- Metric aggregations
+- Bucket aggregations
+- Pipeline aggregations
+- Metric aggregations have 2 types underneath them
+  - Single-value numeric metric aggregations
+    - These output a single value, like a sum of totals or things like an average
+    - `sum`
+    - `avg`
+    - `cardinality` - this is like a count of `distinct` on a field, it also isn't 100% accurate as its an estimate
+    - `value_count`
+    - `max/min` etc
+  - Multi-value numeric metric aggregations
+    - These output multiple values
+    - `stats` - this is a useful one that does count, min, max, avg and sum on a field
+    - `string_stats` - like stats but for a field that is a string
+- Bucket aggregations, these will define a criteria that will gather documents into groups, then run an aggregation on each group 
+  - `terms` will group documents by a field - this could be used on fields that are enums
+    - Term aggregations don't do much on themselves but you can use them in conjuction with nested (aka sub) aggregations to get the most out of them
+      - To do this, you add another `aggs` property at the same level of the terms property to run an aggregation on each bucket
+  - `filter` is a customised agg that works just like a query, which can have a nested query. it works just like a query
+  - `filters` is just like `filter` but defines many filters so that you can have many buckets to work against
+    - this is a little odd because it defines a filters property within a filters property but its like that because the parent filters can contain many other configuration properties
+  - `range`, just like filters, you can define buckets based on range of numbers such as order totals
+    - theres an alternative `date_range` agg that works on dates 
+      - date_range can use date maths if you don't want to hard code dates
+      - you can also format the date format too
+    - it makes doing number based groupings easier than using the filter agg
+    - the `to` property is exclusive and the `from` property is inclusive
+    - you can include a `key` property to customise each name of the bucket
+  - `histogram` is another agg that allows you to do table like histogramming
+  - `missing` allows you do aggregations on documents against fields that are missing
+    - for example, you many orders won't have returns against them, if you want to have a bucket with these, then you can have a missing agg on the returns/refunds property or have a null value
+  - `nested` is an aggregation on the `nested` mapped types
+    - just like querying on nested objects, you provide a `path` property
+    - then at the same level, you provide another `aggs` to do the actual aggregation
+- Aggregations run in the context of the parent query, in most cases the parent agg will work against whatever `query` is defined, if there is none, then its against all the index
+  - if its a nested agg, then its against the documents that are in the parents bucket
+
+
+#### Metric aggregation example
+
+`curl localhost:9200/orders/_search`
+```json
+{              //no need for a query object, this means the aggregation will run on all the data in the index
+  "size": 0,   //we don't actually need to see the hits
+  "aggs": {   //can also the called aggregations
+    "total_sales": {  //this is a friendly display name given to this aggregation, which will appear in the result
+      "sum": {
+        "field": "total"           //the field to run the sum aggregation on, this this case total
+      }
+    },
+    "average_sales": {            //you can have multiple aggregation calcs in a single query
+      "avg": {
+        "field": "total"
+      }
+    }
+  }
+}
+```
+
+#### Bucket aggregation example
+
+```json
+{
+  "size": 0,
+  "aggs": {
+    "order_status_count": {  //the name of the agg
+      "terms": {
+        "field": "order_status"
+      },
+      "aggs" : {   // optional but makes the most out of a terms agg 
+        "order_stats_for_status": {
+          "stats": {
+            "field": "order_total"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+#### filter agg
+
+```json
+{
+  "size": 0,
+  "aggs": {
+    "high_value_orders": { //the name of the agg
+      "filter": {
+        "range": {
+          "order_total": {
+            "gte": "5000"
+          }
+        }
+      },
+      "aggs": {
+        "high_value_order_stats": {
+          "stats": {
+            "field": "order_total"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+#### Filters agg
+
+```json
+{
+  "size": 0,
+  "aggs": {
+    "order_groups": {    //the name of the agg
+      "filters": {
+        "filters": {
+          "low_orders": {  //the name of the first group
+            "range": {                   // you don't have to use range here, you can stick to terms or even match here
+              "order_total": {
+                "lte": 10
+              }
+            }
+          },
+          "medium_orders": {  //the name of the second group
+            "range": {
+              "order_total": {
+                "lte": 500,
+                "gt": 10
+              }
+            }
+          },
+          "high_orders": {  //the name of the last group
+            "range": {
+              "order_total": {
+                "gt": 500
+              }
+            }
+          }
+        },
+        "aggs": {   //this aggs will run for each bucket created within this filters block
+          "order_stats": {
+            "stats": {
+              "field": "order_total"
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+#### Range agg
+
+```json
+{
+  "size": 0,
+  "aggs": {
+    "order_groups": {    //the name of the agg
+      "range": {         // can be date_range if using groups using dates
+        "field": "order_totals",
+        "ranges": [
+          {
+            "key": "low",
+            "to": 50
+          },
+          {
+            "key": "medium",
+            "to":100,
+            "from": 50
+          }
+          ...
+        ]
+      }
+    }
+  }
+}
+```
+
+#### Missing aggs
+
+```json
+{
+  "size": 0,
+  "aggs": {
+    "orders_no_refunds": {    //the name of the agg
+      "missing": {
+        "field": "refunds"
+      }
+    }
+  }
+}
+```
+
+#### Nested aggs
+
+```json
+{
+  "size": 0,
+  "aggs": {
+    "average_age_of_owners": {    //the name of the agg
+      "nested": {
+        "path": "owners"
+      },
+      "aggs": {
+        "average_age": {
+          "avg": "owners.age"
+        }
+      }
+    }
+  }
+}
+```
+
+
 ### General Notes
 
 - Upgrading ES should happen by upgrading the clients first then the server
 - Text vs Keyword property types, Text is for general text search that allows processing while Keyword is for SQL == type of searches
-
-
+- During search, you can change the returned format to YAML by adding `?format=yaml` to the url
+- You can customise the search result source property in a number of ways
+  - `"_source": false` will not return the source data
+  - `"_source": "propertyName"` will return the source data but for only that field
+  - `"_source": ["propertyName","another"]` again but for a list of fields
+  - `"_source": ["propertyName.*"]` again but with wildcard syntax
+  - `"_source": { "includes": ["propertyName.*"], "excludes": "propertyName.nestedProperty"}`
+- the search result size can be customised using the `?size=x` query param or the `"size": x` property in the query
+- pagination is done using the `from` property
+  - There is no page property so you have to work out pages yourself
+  - total pages = round_up(hits/page size) : 2 = round up(11 / 10)
+  - if you want to view a page = page * page size
+- pagination is request based, so any insertions/deletions that happen to that index while paginating will have an affect, if you dont want this to happen, use cursors
+- sorting is the `sort` property that takes a list of properties to sort by
+  - for fields that have multiple values (arrays) you can sort using a sorting `mode`
+    - `avg` the average
+    - `max` the max
+    - `min` the min
+    - `sum` the sum
+    - `median` the median
+- `filters` are queries that dont calculate relevance and therefore don't come back with different scores, they are best used for queries that have a yes no answer
+  - best used on properties such as numbers, dates or keywords
+  - 
 
 
 

@@ -9,6 +9,7 @@ import org.springframework.data.elasticsearch.annotations.Dynamic;
 import org.springframework.data.elasticsearch.annotations.Field;
 import org.springframework.data.elasticsearch.annotations.FieldType;
 import org.springframework.data.elasticsearch.annotations.InnerField;
+import org.springframework.data.elasticsearch.annotations.Mapping;
 import org.springframework.data.elasticsearch.annotations.MultiField;
 import org.springframework.data.elasticsearch.annotations.Setting;
 
@@ -18,6 +19,7 @@ import org.springframework.data.elasticsearch.annotations.Setting;
  */
 @Document(indexName = "companyauto", createIndex = true, dynamic = Dynamic.TRUE)
 @Setting(shards = 1, replicas = 1, settingPath = "static/index_settings.json")
+//@Mapping(mappingPath = "static") you can also use this to define the mapping of this doc instead of the annotations
 public record CompanyAuto(@Id
                           String id,
                           @MultiField(
@@ -43,11 +45,14 @@ public record CompanyAuto(@Id
                           @Field(type = FieldType.Date)
                           LocalDate dateOfIncorporation,
 
-                          @Field(type = FieldType.Auto)
+                          @Field(type = FieldType.Keyword)
                           List<String> services,
 
-                          @Field(type = FieldType.Auto)
-                          String owner //todo build a relationship
+                          @Field(type = FieldType.Nested)
+                          Owner owner, //todo build a relationship
+
+                          @Field(type = FieldType.Keyword)
+                          Status status
 ) {
 
 }
